@@ -2,7 +2,7 @@ plugins { id("com.android.application"); id("org.jetbrains.kotlin.android") }
 android {
     namespace = "com.localcreator.app"
     compileSdk = 35
-    defaultConfig { applicationId = "com.localcreator.app"; minSdk = 27; targetSdk = 35; versionCode = 8; versionName = "0.8.0" }
+    defaultConfig { applicationId = "com.localcreator.app"; minSdk = 27; targetSdk = 35; versionCode = 9; versionName = "0.9.0" }
     signingConfigs {
         create("persistent") {
             System.getenv("LOCAL_CREATOR_KEYSTORE")?.takeIf { it.isNotBlank() }?.let {
@@ -21,6 +21,7 @@ dependencies {
     implementation("androidx.activity:activity-ktx:1.9.3")
     implementation("androidx.core:core-ktx:1.15.0")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")
+    implementation("androidx.lifecycle:lifecycle-service:2.8.7")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
     implementation("androidx.camera:camera-camera2:1.4.1")
     implementation("androidx.camera:camera-lifecycle:1.4.1")
