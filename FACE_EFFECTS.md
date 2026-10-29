@@ -1,0 +1,13 @@
+# Face-guided export 0.8
+
+Source only, not yet built or phone-tested. Owner confirmed intro assembly/audio in 0.7. Tested recorder and home navigation are unchanged; home still says 0.7, recorder 0.6. New exporter identifies itself as 0.8; Android package version is 0.8.0.
+
+Optional checkbox is OFF by default. Enabling samples the recording locally at roughly one-second intervals, capped at 10 minutes of source duration. Bundled ML Kit face-detection model; no runtime model download, paid API, or server processing. Face model/native libraries increase installed app size outside the managed-files budget. No extracted frames are saved; one scaled bitmap at a time, small box/time list in memory. Detector waits occur on IO dispatcher; cancellation waits for an in-flight inference before resource release.
+
+This is sampled face-guided reframing, not continuous frame-by-frame tracking or facial identity recognition. Use a single person. Missing/ambiguous (multiple) face samples reduce/disable effects. No face produces unchanged framing and an explicit report. Portrait rotation/mirroring coordinate alignment must be tested on device. This does NOT guarantee perfect face framing between samples.
+
+Rendering adds up to 12 percent zoom on a repeating 10-second schedule: 3 seconds baseline, 0.8-second smooth zoom, hold to 6.2 seconds, 0.8-second return, baseline to 10 seconds. Alternating small horizontal shifts are bounded to avoid image-edge gaps. Padded face-box union from adjacent samples constrains translation; impossible fits revert to identity. Very large faces may therefore get no zoom. Sudden movement/detection gaps can still cause visible changes; smoothing is limited, not production polish. Timing is not speech-aware. Intro item receives NO face effect. Recording effect uses item-local timestamps before aspect-ratio presentation.
+
+Effects are digital crops, not new physical camera angles. Output remains 1080p H.264/AAC mono; 4K originals untouched. Audio/intro join remains the existing pipeline. Storage checks, 2 GB export ceiling, foreground cancellation, source preservation and private storage behavior remain. Other effects/bubbles/transcription/Shorts/YouTube are not added.
+
+Build/lint first, then test 20–30 seconds with one face, effects OFF and ON. Confirm intro unchanged, zooms start on recorded section around second 3, return to baseline, no black edges in original-image region, no forehead/chin clipping, audio still synced. Test face loss, two people, portrait/landscape, 4K original, and cancel during analysis. If overly abrupt or coordinates wrong, turn effects OFF and report behavior. No automatic deletions or external uploads are performed by this commit.

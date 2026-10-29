@@ -13,6 +13,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.FileProvider
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
+import androidx.media3.common.Effect
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
 import androidx.media3.common.audio.ChannelMixingAudioProcessor
@@ -35,6 +36,7 @@ class IntroExportActivity : ComponentActivity() {
     private lateinit var status: TextView
     private lateinit var select: Spinner
     private lateinit var format: Spinner
+    private lateinit var faceEffects: CheckBox
     private lateinit var exportButton: Button
     private lateinit var cancelButton: Button
     private lateinit var list: LinearLayout
@@ -56,11 +58,12 @@ class IntroExportActivity : ComponentActivity() {
         storage = Storage(this); exports = File(storage.root, "exports").apply { mkdirs() }
         pendingCopy = state?.getString("pendingCopy"); picking = state?.getBoolean("picking") ?: false
         val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(24, 24, 24, 24); fitsSystemWindows = true }
-        root.addView(TextView(this).apply { text = "Add intro and export"; textSize = 24f })
-        root.addView(TextView(this).apply { text = "Import your intro on the recording screen first. Choose a recording below. Sources stay unchanged. Output: 1080p H.264/AAC; audio mixed to mono at 48 kHz." })
+        root.addView(TextView(this).apply { text = "Intro + face-guided export · 0.8"; textSize = 23f })
+        root.addView(TextView(this).apply { text = "Import intro on the recorder screen. Select a saved recording. Output 1080p; sources kept. Face effects affect only the recording." })
         status = TextView(this); root.addView(status)
         select = Spinner(this); root.addView(select)
         format = Spinner(this).apply { adapter = ArrayAdapter(this@IntroExportActivity, android.R.layout.simple_spinner_dropdown_item, listOf("Vertical 1080 × 1920", "Landscape 1920 × 1080")) }; root.addView(format)
+        faceEffects = CheckBox(this).apply { text = "Subtle face-guided zooms (offline; up to 10 min)"; isChecked = state?.getBoolean("faceEffects") ?: false }; root.addView(faceEffects)
         exportButton = Button(this).apply { text = "Export intro + selected recording"; setOnClickListener { beginExport() } }; root.addView(exportButton)
         cancelButton = Button(this).apply { text = "Cancel current job"; setOnClickListener { cancelJob("Canceled. Sources kept.") } }; root.addView(cancelButton)
         list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
@@ -73,57 +76,56 @@ class IntroExportActivity : ComponentActivity() {
         refresh(); controls()
     }
     private fun controls() {
-        select.isEnabled = !active && !picking; format.isEnabled = !active && !picking
+        select.isEnabled = !active && !picking; format.isEnabled = !active && !picking; faceEffects.isEnabled = !active && !picking
         exportButton.isEnabled = !active && !picking && recordings.isNotEmpty()
         cancelButton.isEnabled = active
         if (active) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON) else window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
     }
     private fun refresh() {
         lifecycleScope.launch {
-            val data = withContext(Dispatchers.IO) { Triple(storage.list(), exports.listFiles().orEmpty().filter { it.isFile && it.extension == "mp4" }.sortedByDescending { it.lastModified() }, storage.snapshot()) }
-            if (active || picking) return@launch
-            recordings = data.first
-            select.adapter = ArrayAdapter(this@IntroExportActivity, android.R.layout.simple_spinner_dropdown_item, recordings.map { "${DateFormat.getDateTimeInstance().format(Date(it.lastModified()))} · ${gb(it.length())}" })
-            list.removeAllViews()
-            list.addView(TextView(this@IntroExportActivity).apply { text = "Finished exports (${data.second.size}) · managed ${gb(data.third.used)} / 10 GB" })
-            data.second.forEach { file ->
-                list.addView(TextView(this@IntroExportActivity).apply { text = "${DateFormat.getDateTimeInstance().format(Date(file.lastModified()))} · ${gb(file.length())}" })
-                val buttons = LinearLayout(this@IntroExportActivity)
-                fun button(text: String, action: () -> Unit) = Button(this@IntroExportActivity).apply { this.text = text; setOnClickListener { if (!active && !picking) action() } }
-                buttons.addView(button("Play") {
-                    try { startActivity(Intent(Intent.ACTION_VIEW).setDataAndType(FileProvider.getUriForFile(this@IntroExportActivity, "$packageName.files", file), "video/mp4").addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)) } catch(e: Exception) { status.text = "Playback failed: ${e.message}" }
-                })
-                buttons.addView(button("Save copy") { pendingCopy = file.name; picking = true; controls(); saveCopy.launch(file.name) })
-                buttons.addView(button("Delete") {
-                    AlertDialog.Builder(this@IntroExportActivity).setTitle("Delete finished export?").setMessage("Original recording and intro are kept.").setNegativeButton("Keep", null).setPositiveButton("Delete") { _, _ ->
-                        if (!active && !picking) lifecycleScope.launch {
-                            val ok = withContext(Dispatchers.IO) { file.delete() }; status.text = if (ok) "Export deleted. Sources kept." else "Delete failed."; refresh()
-                        }
-                    }.show()
-                })
-                list.addView(buttons)
-            }
-            controls()
+            try {
+                val data = withContext(Dispatchers.IO) { Triple(storage.list(), exports.listFiles().orEmpty().filter { it.isFile && it.extension == "mp4" }.sortedByDescending { it.lastModified() }, storage.snapshot()) }
+                if (active || picking) return@launch
+                recordings = data.first
+                select.adapter = ArrayAdapter(this@IntroExportActivity, android.R.layout.simple_spinner_dropdown_item, recordings.map { "${DateFormat.getDateTimeInstance().format(Date(it.lastModified()))} · ${gb(it.length())}" })
+                if (recordings.isEmpty()) status.text = "No recordings found. Make and stop a recording before exporting."
+                list.removeAllViews()
+                list.addView(TextView(this@IntroExportActivity).apply { text = "Finished exports (${data.second.size}) · managed ${gb(data.third.used)} / 10 GB" })
+                data.second.forEach { file ->
+                    list.addView(TextView(this@IntroExportActivity).apply { text = "${DateFormat.getDateTimeInstance().format(Date(file.lastModified()))} · ${gb(file.length())}" })
+                    val buttons = LinearLayout(this@IntroExportActivity)
+                    fun button(text: String, action: () -> Unit) = Button(this@IntroExportActivity).apply { this.text = text; setOnClickListener { if (!active && !picking) action() } }
+                    buttons.addView(button("Play") {
+                        try { startActivity(Intent(Intent.ACTION_VIEW).setDataAndType(FileProvider.getUriForFile(this@IntroExportActivity, "$packageName.files", file), "video/mp4").addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)) } catch(e: Exception) { status.text = "Playback failed: ${e.message}" }
+                    })
+                    buttons.addView(button("Save copy") { pendingCopy = file.name; picking = true; controls(); saveCopy.launch(file.name) })
+                    buttons.addView(button("Delete") {
+                        AlertDialog.Builder(this@IntroExportActivity).setTitle("Delete finished export?").setMessage("Original recording and intro are kept.").setNegativeButton("Keep", null).setPositiveButton("Delete") { _, _ ->
+                            if (!active && !picking) lifecycleScope.launch { val ok = withContext(Dispatchers.IO) { file.delete() }; status.text = if (ok) "Export deleted. Sources kept." else "Delete failed."; refresh() }
+                        }.show()
+                    })
+                    list.addView(buttons)
+                }; controls()
+            } catch(e: CancellationException) { throw e } catch(e: Exception) { status.text = "Could not read local files: ${e.message}" }
         }
     }
     private fun duration(file: File): Long {
         val reader = MediaMetadataRetriever()
         try { reader.setDataSource(file.path); require(reader.extractMetadata(MediaMetadataRetriever.METADATA_KEY_HAS_VIDEO) == "yes") { "Input has no readable video track" }; return reader.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull()?.takeIf { it > 0 } ?: error("Cannot determine input duration") } finally { reader.release() }
     }
-    private fun edited(file: File, width: Int, height: Int): EditedMediaItem {
-        val mixer = ChannelMixingAudioProcessor().apply {
-            putChannelMixingMatrix(ChannelMixingMatrix.create(1, 1))
-            putChannelMixingMatrix(ChannelMixingMatrix.create(2, 1))
-        }
+    private fun edited(file: File, width: Int, height: Int, motion: FaceMotion? = null): EditedMediaItem {
+        val mixer = ChannelMixingAudioProcessor().apply { putChannelMixingMatrix(ChannelMixingMatrix.create(1, 1)); putChannelMixingMatrix(ChannelMixingMatrix.create(2, 1)) }
         val resampler = SonicAudioProcessor().apply { setOutputSampleRateHz(48_000) }
-        val presentation = Presentation.createForWidthAndHeight(width, height, Presentation.LAYOUT_SCALE_TO_FIT)
-        return EditedMediaItem.Builder(MediaItem.fromUri(Uri.fromFile(file))).setEffects(Effects(listOf(mixer, resampler), listOf(presentation))).build()
+        val effects = mutableListOf<Effect>()
+        if (motion != null) effects.add(motion)
+        effects.add(Presentation.createForWidthAndHeight(width, height, Presentation.LAYOUT_SCALE_TO_FIT))
+        return EditedMediaItem.Builder(MediaItem.fromUri(Uri.fromFile(file))).setEffects(Effects(listOf(mixer, resampler), effects)).build()
     }
     private fun beginExport() {
         if (active || picking) return
         val recording = recordings.getOrNull(select.selectedItemPosition) ?: return
         val intro = File(storage.intros, "intro.media")
-        val vertical = format.selectedItemPosition == 0
+        val vertical = format.selectedItemPosition == 0; val useFaceEffects = faceEffects.isChecked
         active = true; controls(); status.text = "Checking inputs and available space…"
         task = lifecycleScope.launch {
             try {
@@ -133,12 +135,17 @@ class IntroExportActivity : ComponentActivity() {
                     val estimate = Math.addExact(Math.multiplyExact(ms / 1000 + 1, 2_000_000L), Storage.HEADROOM)
                     storage.snapshot().failure(estimate)?.let { error(it) }
                 }
+                val motion = if (useFaceEffects) withContext(Dispatchers.IO) {
+                    FaceMotion.analyze(recording, storage) { percent -> withContext(Dispatchers.Main) { status.text = "Analyzing face locally: $percent% — keep this screen open" } }
+                } else null
+                currentCoroutineContext().ensureActive()
                 if (!lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) { cancelJob("Export did not start because app left screen."); return@launch }
+                val faceReport = when { motion == null -> "Effects off."; motion.detectedSamples == 0 -> "No single face detected; original framing used."; else -> "Single face found in ${motion.detectedSamples}/${motion.totalSamples} samples." }
                 val id = UUID.randomUUID().toString()
                 val output = File(storage.working, "export_$id.partial.mp4"); partial = output
                 val finalFile = File(exports, "LocalCreator_$id.mp4")
                 val width = if (vertical) 1080 else 1920; val height = if (vertical) 1920 else 1080
-                val sequence = EditedMediaItemSequence(edited(intro, width, height), edited(recording, width, height))
+                val sequence = EditedMediaItemSequence(edited(intro, width, height), edited(recording, width, height, motion))
                 val composition = Composition.Builder(sequence).experimentalSetForceAudioTrack(true).build()
                 val engine = Transformer.Builder(this@IntroExportActivity).setVideoMimeType(MimeTypes.VIDEO_H264).setAudioMimeType(MimeTypes.AUDIO_AAC).addListener(object : Transformer.Listener {
                     override fun onCompleted(composition: Composition, result: ExportResult) {
@@ -146,7 +153,7 @@ class IntroExportActivity : ComponentActivity() {
                         task = lifecycleScope.launch {
                             try {
                                 withContext(Dispatchers.IO) { require(output.length() > 0) { "Encoder produced an empty output" }; storage.snapshot().failure(0)?.let { error(it) }; java.nio.file.Files.move(output.toPath(), finalFile.toPath()) }
-                                partial = null; status.text = "Export complete. Play it to check intro, transition and voice audio. Sources kept."
+                                partial = null; status.text = "Export complete. $faceReport Play to verify framing and audio. Sources kept."
                             } catch(e: CancellationException) { throw e } catch(e: Exception) { output.delete(); partial = null; status.text = "Could not finalize export: ${e.message}" }
                             finally { active = false; controls(); refresh() }
                         }
@@ -155,14 +162,16 @@ class IntroExportActivity : ComponentActivity() {
                 }).build()
                 transformer = engine; engine.start(composition, output.path)
                 monitor = lifecycleScope.launch {
-                    val progress = ProgressHolder()
-                    while (isActive && active) {
-                        delay(1_000L)
-                        val problem = withContext(Dispatchers.IO) { storage.snapshot().failure(Storage.HEADROOM) ?: if (output.length() >= 2_000_000_000L) "Export reached the 2 GB test-build limit" else null }
-                        if (problem != null) { cancelJob(problem); return@launch }
-                        val state = engine.getProgress(progress)
-                        status.text = if (state == Transformer.PROGRESS_STATE_AVAILABLE) "Exporting ${progress.progress}% — keep this screen open" else "Exporting — keep this screen open"
-                    }
+                    try {
+                        val progress = ProgressHolder()
+                        while (isActive && active) {
+                            delay(1_000L)
+                            val problem = withContext(Dispatchers.IO) { storage.snapshot().failure(Storage.HEADROOM) ?: if (output.length() >= 2_000_000_000L) "Export reached the 2 GB test-build limit" else null }
+                            if (problem != null) { cancelJob(problem); return@launch }
+                            val state = engine.getProgress(progress)
+                            status.text = (if (state == Transformer.PROGRESS_STATE_AVAILABLE) "Exporting ${progress.progress}%" else "Exporting") + " — $faceReport Keep this screen open"
+                        }
+                    } catch(e: CancellationException) { throw e } catch(e: Exception) { cancelJob("Export monitoring failed: ${e.message}") }
                 }
             } catch(e: CancellationException) { throw e } catch(e: Exception) { cancelJob("Export could not start: ${e.message}") }
         }
@@ -196,13 +205,12 @@ class IntroExportActivity : ComponentActivity() {
                         }; target.flush()
                     } }
                     require(count == expected && source.length() == expected) { "Source changed during copy" }
-                }
-                status.text = "Copy saved. Open the destination copy to verify before deleting anything."
-            } catch(e: CancellationException) { throw e } catch(e: Exception) { status.text = "Copy failed: ${e.message}. Original export kept; destination may be partial." }
+                }; status.text = "Copy saved. Open destination copy to verify before deleting anything."
+            } catch(e: CancellationException) { throw e } catch(e: Exception) { status.text = "Copy failed: ${e.message}. Export kept; destination may be partial." }
             finally { active = false; controls(); refresh() }
         }
     }
     private fun gb(bytes: Long) = String.format(Locale.US, "%.2f GB", bytes / 1e9)
-    override fun onSaveInstanceState(state: Bundle) { pendingCopy?.let { state.putString("pendingCopy", it) }; state.putBoolean("picking", picking); super.onSaveInstanceState(state) }
-    override fun onStop() { if (active) cancelJob("Job stopped because the app left the screen. Sources kept. A copy destination may be incomplete."); super.onStop() }
+    override fun onSaveInstanceState(state: Bundle) { pendingCopy?.let { state.putString("pendingCopy", it) }; state.putBoolean("picking", picking); state.putBoolean("faceEffects", faceEffects.isChecked); super.onSaveInstanceState(state) }
+    override fun onStop() { if (active) cancelJob("Job stopped because app left screen. Sources kept. A copy destination may be incomplete."); super.onStop() }
 }
