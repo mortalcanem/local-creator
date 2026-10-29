@@ -43,6 +43,7 @@ class IntroExportActivity : ComponentActivity() {
     private var recordings: List<File> = emptyList()
     private var active = false
     private var picking = false
+    private var generation = 0
     private var transformer: Transformer? = null
     private var task: Job? = null
     private var monitor: Job? = null
@@ -58,26 +59,26 @@ class IntroExportActivity : ComponentActivity() {
         storage = Storage(this); exports = File(storage.root, "exports").apply { mkdirs() }
         pendingCopy = state?.getString("pendingCopy"); picking = state?.getBoolean("picking") ?: false
         val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(24, 24, 24, 24); fitsSystemWindows = true }
-        root.addView(TextView(this).apply { text = "Intro + face-guided export · 0.8"; textSize = 23f })
-        root.addView(TextView(this).apply { text = "Import intro on the recorder screen. Select a saved recording. Output 1080p; sources kept. Face effects affect only the recording." })
+        root.addView(TextView(this).apply { text = "Intro + face-guided export · long-video groundwork"; textSize = 22f })
+        root.addView(TextView(this).apply { text = "Output 1080p; sources kept. KEEP THIS SCREEN OPEN: leaving cancels rendering. Analysis checkpoints can be reused, but rendered video cannot yet resume." })
         status = TextView(this); root.addView(status)
         select = Spinner(this); root.addView(select)
         format = Spinner(this).apply { adapter = ArrayAdapter(this@IntroExportActivity, android.R.layout.simple_spinner_dropdown_item, listOf("Vertical 1080 × 1920", "Landscape 1920 × 1080")) }; root.addView(format)
-        faceEffects = CheckBox(this).apply { text = "Subtle face-guided zooms (offline; up to 10 min)"; isChecked = state?.getBoolean("faceEffects") ?: false }; root.addView(faceEffects)
+        faceEffects = CheckBox(this).apply { text = "Subtle face-guided zooms (offline; recordings up to 2 hours)"; isChecked = state?.getBoolean("faceEffects") ?: false }; root.addView(faceEffects)
         exportButton = Button(this).apply { text = "Export intro + selected recording"; setOnClickListener { beginExport() } }; root.addView(exportButton)
-        cancelButton = Button(this).apply { text = "Cancel current job"; setOnClickListener { cancelJob("Canceled. Sources kept.") } }; root.addView(cancelButton)
+        cancelButton = Button(this).apply { text = "Cancel current job"; setOnClickListener { cancelJob("Canceled. Sources and saved analysis checkpoints kept.") } }; root.addView(cancelButton)
         list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         root.addView(ScrollView(this).apply { addView(list) }, LinearLayout.LayoutParams(-1, 0, 1f))
         root.addView(Button(this).apply { text = "Back to home"; setOnClickListener { if (!active) finish() else status.text = "Cancel the current job first." } })
         setContentView(root)
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
-            override fun handleOnBackPressed() { if (active) cancelJob("Canceled. Sources kept.") else finish() }
+            override fun handleOnBackPressed() { if (active) cancelJob("Canceled. Sources and saved analysis checkpoints kept.") else finish() }
         })
         refresh(); controls()
     }
     private fun controls() {
         select.isEnabled = !active && !picking; format.isEnabled = !active && !picking; faceEffects.isEnabled = !active && !picking
-        exportButton.isEnabled = !active && !picking && recordings.isNotEmpty()
+        exportButton.isEnabled = !active && !picking && recordings.isNotEmpty() && !LongRecordingService.state.value.active
         cancelButton.isEnabled = active
         if (active) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON) else window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
     }
@@ -90,7 +91,7 @@ class IntroExportActivity : ComponentActivity() {
                 select.adapter = ArrayAdapter(this@IntroExportActivity, android.R.layout.simple_spinner_dropdown_item, recordings.map { "${DateFormat.getDateTimeInstance().format(Date(it.lastModified()))} · ${gb(it.length())}" })
                 if (recordings.isEmpty()) status.text = "No recordings found. Make and stop a recording before exporting."
                 list.removeAllViews()
-                list.addView(TextView(this@IntroExportActivity).apply { text = "Finished exports (${data.second.size}) · managed ${gb(data.third.used)} / 10 GB" })
+                list.addView(TextView(this@IntroExportActivity).apply { text = "Finished exports (${data.second.size}) · managed ${gb(data.third.used)} / ${gb(data.third.budget)}" })
                 data.second.forEach { file ->
                     list.addView(TextView(this@IntroExportActivity).apply { text = "${DateFormat.getDateTimeInstance().format(Date(file.lastModified()))} · ${gb(file.length())}" })
                     val buttons = LinearLayout(this@IntroExportActivity)
@@ -103,8 +104,7 @@ class IntroExportActivity : ComponentActivity() {
                         AlertDialog.Builder(this@IntroExportActivity).setTitle("Delete finished export?").setMessage("Original recording and intro are kept.").setNegativeButton("Keep", null).setPositiveButton("Delete") { _, _ ->
                             if (!active && !picking) lifecycleScope.launch { val ok = withContext(Dispatchers.IO) { file.delete() }; status.text = if (ok) "Export deleted. Sources kept." else "Delete failed."; refresh() }
                         }.show()
-                    })
-                    list.addView(buttons)
+                    }); list.addView(buttons)
                 }; controls()
             } catch(e: CancellationException) { throw e } catch(e: Exception) { status.text = "Could not read local files: ${e.message}" }
         }
@@ -116,83 +116,92 @@ class IntroExportActivity : ComponentActivity() {
     private fun edited(file: File, width: Int, height: Int, motion: FaceMotion? = null): EditedMediaItem {
         val mixer = ChannelMixingAudioProcessor().apply { putChannelMixingMatrix(ChannelMixingMatrix.create(1, 1)); putChannelMixingMatrix(ChannelMixingMatrix.create(2, 1)) }
         val resampler = SonicAudioProcessor().apply { setOutputSampleRateHz(48_000) }
-        val effects = mutableListOf<Effect>()
-        if (motion != null) effects.add(motion)
+        val effects = mutableListOf<Effect>(); if (motion != null) effects.add(motion)
         effects.add(Presentation.createForWidthAndHeight(width, height, Presentation.LAYOUT_SCALE_TO_FIT))
         return EditedMediaItem.Builder(MediaItem.fromUri(Uri.fromFile(file))).setEffects(Effects(listOf(mixer, resampler), effects)).build()
     }
     private fun beginExport() {
         if (active || picking) return
+        if (LongRecordingService.state.value.active) { status.text = "Stop the long recording before exporting."; return }
         val recording = recordings.getOrNull(select.selectedItemPosition) ?: return
         val intro = File(storage.intros, "intro.media")
         val vertical = format.selectedItemPosition == 0; val useFaceEffects = faceEffects.isChecked
+        val token = ++generation
         active = true; controls(); status.text = "Checking inputs and available space…"
         task = lifecycleScope.launch {
             try {
-                withContext(Dispatchers.IO) {
+                val sourceState = withContext(Dispatchers.IO) {
                     require(intro.isFile && intro.length() > 0) { "Import an intro on the recording screen first" }
                     val ms = Math.addExact(duration(intro), duration(recording))
                     val estimate = Math.addExact(Math.multiplyExact(ms / 1000 + 1, 2_000_000L), Storage.HEADROOM)
                     storage.snapshot().failure(estimate)?.let { error(it) }
+                    listOf(intro.length(), intro.lastModified(), recording.length(), recording.lastModified())
                 }
-                val motion = if (useFaceEffects) withContext(Dispatchers.IO) {
-                    FaceMotion.analyze(recording, storage) { percent -> withContext(Dispatchers.Main) { status.text = "Analyzing face locally: $percent% — keep this screen open" } }
-                } else null
+                fun checkSources() { require(listOf(intro.length(), intro.lastModified(), recording.length(), recording.lastModified()) == sourceState) { "Source files changed during export" } }
+                val motion = if (useFaceEffects) withContext(Dispatchers.IO) { FaceMotion.analyze(recording, storage) { percent -> withContext(Dispatchers.Main) { if (token == generation) status.text = "Analyzing face locally: $percent% — keep this screen open" } } } else null
                 currentCoroutineContext().ensureActive()
+                if (token != generation) return@launch
                 if (!lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) { cancelJob("Export did not start because app left screen."); return@launch }
+                val outputLimit = withContext(Dispatchers.IO) {
+                    checkSources(); val s = storage.snapshot(); s.failure(Storage.HEADROOM)?.let { error(it) }
+                    minOf(s.budget - s.used, s.free - Storage.FLOOR) - Storage.HEADROOM
+                }
+                require(outputLimit > 0) { "No output space remains above protected limits" }
                 val faceReport = when { motion == null -> "Effects off."; motion.detectedSamples == 0 -> "No single face detected; original framing used."; else -> "Single face found in ${motion.detectedSamples}/${motion.totalSamples} samples." }
-                val id = UUID.randomUUID().toString()
-                val output = File(storage.working, "export_$id.partial.mp4"); partial = output
+                val id = UUID.randomUUID().toString(); val output = File(storage.working, "export_$id.partial.mp4"); partial = output
                 val finalFile = File(exports, "LocalCreator_$id.mp4")
                 val width = if (vertical) 1080 else 1920; val height = if (vertical) 1920 else 1080
                 val sequence = EditedMediaItemSequence(edited(intro, width, height), edited(recording, width, height, motion))
                 val composition = Composition.Builder(sequence).experimentalSetForceAudioTrack(true).build()
                 val engine = Transformer.Builder(this@IntroExportActivity).setVideoMimeType(MimeTypes.VIDEO_H264).setAudioMimeType(MimeTypes.AUDIO_AAC).addListener(object : Transformer.Listener {
                     override fun onCompleted(composition: Composition, result: ExportResult) {
+                        if (token != generation) return
                         monitor?.cancel(); monitor = null; transformer = null
                         task = lifecycleScope.launch {
                             try {
-                                withContext(Dispatchers.IO) { require(output.length() > 0) { "Encoder produced an empty output" }; storage.snapshot().failure(0)?.let { error(it) }; java.nio.file.Files.move(output.toPath(), finalFile.toPath()) }
-                                partial = null; status.text = "Export complete. $faceReport Play to verify framing and audio. Sources kept."
-                            } catch(e: CancellationException) { throw e } catch(e: Exception) { output.delete(); partial = null; status.text = "Could not finalize export: ${e.message}" }
-                            finally { active = false; controls(); refresh() }
+                                withContext(Dispatchers.IO) {
+                                    checkSources(); require(output.length() > 0) { "Encoder produced an empty output" }
+                                    require(output.length() <= outputLimit) { "Output exceeded its available-space allowance" }; storage.snapshot().failure(0)?.let { error(it) }
+                                    java.nio.file.Files.move(output.toPath(), finalFile.toPath())
+                                }
+                                if (token == generation) { partial = null; status.text = "Export complete. $faceReport Play to verify framing and audio. Sources kept." }
+                            } catch(e: CancellationException) { throw e } catch(e: Exception) { output.delete(); if (token == generation) { partial = null; status.text = "Could not finalize export: ${e.message}" } }
+                            finally { if (token == generation) { active = false; controls(); refresh() } }
                         }
                     }
-                    override fun onError(composition: Composition, result: ExportResult, exception: ExportException) { cancelJob("Export failed: ${exception.errorCodeName}: ${exception.message}. Sources kept.") }
+                    override fun onError(composition: Composition, result: ExportResult, exception: ExportException) { if (token == generation) cancelJob("Export failed: ${exception.errorCodeName}: ${exception.message}. Sources kept.") }
                 }).build()
                 transformer = engine; engine.start(composition, output.path)
                 monitor = lifecycleScope.launch {
                     try {
                         val progress = ProgressHolder()
-                        while (isActive && active) {
+                        while (isActive && active && token == generation) {
                             delay(1_000L)
-                            val problem = withContext(Dispatchers.IO) { storage.snapshot().failure(Storage.HEADROOM) ?: if (output.length() >= 2_000_000_000L) "Export reached the 2 GB test-build limit" else null }
+                            val problem = withContext(Dispatchers.IO) { checkSources(); storage.snapshot().failure(Storage.HEADROOM) ?: if (output.length() >= outputLimit) "Export reached its available-space allowance" else null }
+                            if (token != generation) return@launch
                             if (problem != null) { cancelJob(problem); return@launch }
                             val state = engine.getProgress(progress)
-                            status.text = (if (state == Transformer.PROGRESS_STATE_AVAILABLE) "Exporting ${progress.progress}%" else "Exporting") + " — $faceReport Keep this screen open"
+                            status.text = (if (state == Transformer.PROGRESS_STATE_AVAILABLE) "Exporting ${progress.progress}%" else "Exporting") + " — $faceReport Output ${gb(output.length())}; keep this screen open"
                         }
-                    } catch(e: CancellationException) { throw e } catch(e: Exception) { cancelJob("Export monitoring failed: ${e.message}") }
+                    } catch(e: CancellationException) { throw e } catch(e: Exception) { if (token == generation) cancelJob("Export monitoring failed: ${e.message}") }
                 }
-            } catch(e: CancellationException) { throw e } catch(e: Exception) { cancelJob("Export could not start: ${e.message}") }
+            } catch(e: CancellationException) { throw e } catch(e: Exception) { if (token == generation) cancelJob("Export could not start: ${e.message}") }
         }
     }
     private fun cancelJob(message: String) {
-        task?.cancel(); task = null; monitor?.cancel(); monitor = null
-        val engine = transformer; transformer = null
-        try { engine?.cancel() } catch (_: Exception) { }
-        val file = partial; partial = null
-        if (file != null) lifecycleScope.launch(Dispatchers.IO) { file.delete() }
+        generation++; task?.cancel(); task = null; monitor?.cancel(); monitor = null
+        val engine = transformer; transformer = null; try { engine?.cancel() } catch (_: Exception) { }
+        val file = partial; partial = null; if (file != null) lifecycleScope.launch(Dispatchers.IO) { file.delete() }
         active = false; status.text = message; controls(); refresh()
     }
     private fun copyExport(name: String, uri: Uri) {
         if (active || picking) return
-        active = true; controls(); status.text = "Saving copy… Keep this screen open."
+        val token = ++generation; active = true; controls(); status.text = "Saving copy… Keep this screen open."
         task = lifecycleScope.launch {
             try {
                 withContext(Dispatchers.IO) {
                     require(name == File(name).name && name.endsWith(".mp4"))
-                    val source = File(exports, name); val expected = source.length()
-                    require(source.isFile && expected > 0)
+                    val source = File(exports, name); val expected = source.length(); require(source.isFile && expected > 0)
                     require(expected <= (storage.snapshot().free - Storage.FLOOR - Storage.HEADROOM).coerceAtLeast(0)) { "Not enough space above free-space reserve" }
                     val output = contentResolver.openOutputStream(uri, "w") ?: error("Cannot open destination")
                     var count = 0L; var checked = 0L
@@ -203,14 +212,13 @@ class IntroExportActivity : ComponentActivity() {
                             if(count == 0L || count - checked >= 16_000_000L) { require(storage.snapshot().free > Storage.FLOOR + Storage.HEADROOM) { "Free-space reserve reached" }; checked = count }
                             target.write(buffer, 0, n); count += n
                         }; target.flush()
-                    } }
-                    require(count == expected && source.length() == expected) { "Source changed during copy" }
-                }; status.text = "Copy saved. Open destination copy to verify before deleting anything."
-            } catch(e: CancellationException) { throw e } catch(e: Exception) { status.text = "Copy failed: ${e.message}. Export kept; destination may be partial." }
-            finally { active = false; controls(); refresh() }
+                    } }; require(count == expected && source.length() == expected) { "Source changed during copy" }
+                }; if (token == generation) status.text = "Copy saved. Open destination copy to verify before deleting anything."
+            } catch(e: CancellationException) { throw e } catch(e: Exception) { if (token == generation) status.text = "Copy failed: ${e.message}. Export kept; destination may be partial." }
+            finally { if (token == generation) { active = false; controls(); refresh() } }
         }
     }
     private fun gb(bytes: Long) = String.format(Locale.US, "%.2f GB", bytes / 1e9)
     override fun onSaveInstanceState(state: Bundle) { pendingCopy?.let { state.putString("pendingCopy", it) }; state.putBoolean("picking", picking); state.putBoolean("faceEffects", faceEffects.isChecked); super.onSaveInstanceState(state) }
-    override fun onStop() { if (active) cancelJob("Job stopped because app left screen. Sources kept. A copy destination may be incomplete."); super.onStop() }
+    override fun onStop() { if (active) cancelJob("Job stopped because app left screen. Sources/checkpoints kept; rendering must restart. A copy destination may be incomplete."); super.onStop() }
 }

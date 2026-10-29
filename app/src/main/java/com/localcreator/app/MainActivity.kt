@@ -67,7 +67,7 @@ class MainActivity : ComponentActivity() {
         pendingBackup = state?.getString("pendingBackup")
         pickerOpen = state?.getBoolean("pickerOpen") ?: false
         val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(20, 12, 20, 12); fitsSystemWindows = true }
-        root.addView(TextView(this).apply { text = "Local Creator 0.6 · camera test"; textSize = 21f })
+        root.addView(TextView(this).apply { text = "Short-test recorder · 2 GB per recording"; textSize = 21f })
         usage = TextView(this).apply { textSize = 12f }
         status = TextView(this).apply { text = "Starting camera…" }
         root.addView(usage); root.addView(status)
@@ -187,8 +187,8 @@ class MainActivity : ComponentActivity() {
         refreshJob = lifecycleScope.launch {
             try {
                 val (s, videos, introSize) = withContext(Dispatchers.IO) { Triple(storage.snapshot(), storage.list(), File(storage.intros, "intro.media").length()) }
-                usage.text = "Managed ${gb(s.used)} / 10 GB · free ${gb(s.free)} · 50 GB reserve"
-                introLabel.text = if (introSize > 0) "Intro ${gb(introSize)} imported; assembly not implemented yet." else "No intro imported"
+                usage.text = "Managed ${gb(s.used)} / ${gb(s.budget)} · free ${gb(s.free)} · 50 GB reserve"
+                introLabel.text = if (introSize > 0) "Intro ${gb(introSize)} imported. Combine it from Home > Add intro and export." else "No intro imported"
                 library.removeAllViews()
                 library.addView(TextView(this@MainActivity).apply { text = "Saved recordings (${videos.size})"; textSize = 18f })
                 videos.forEach { file ->
@@ -239,10 +239,10 @@ class MainActivity : ComponentActivity() {
     }
     private fun confirmCleanup() {
         if (!idle()) return
-        AlertDialog.Builder(this).setTitle("Clear temporary files?").setMessage("Originals and intro are kept.").setNegativeButton("Cancel", null).setPositiveButton("Clear") { _, _ -> operation("Clearing…", "Temporary files cleared.") { require(storage.working.listFiles().orEmpty().map { it.deleteRecursively() }.all { it }) } }.show()
+        AlertDialog.Builder(this).setTitle("Clear temporary files?").setMessage("Originals and intro are kept. Saved face-analysis checkpoints will be removed.").setNegativeButton("Cancel", null).setPositiveButton("Clear") { _, _ -> operation("Clearing…", "Temporary files cleared.") { require(storage.working.listFiles().orEmpty().map { it.deleteRecursively() }.all { it }) } }.show()
     }
     private fun importIntro(uri: Uri) {
-        operation("Importing intro…", "Intro imported locally; not yet merged into recordings.") {
+        operation("Importing intro…", "Intro imported. Return Home and choose Add intro and export to combine it.") {
             val partial = File(storage.intros, "intro.partial")
             try {
                 partial.delete()
