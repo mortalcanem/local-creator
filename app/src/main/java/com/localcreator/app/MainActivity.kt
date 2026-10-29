@@ -107,6 +107,7 @@ class MainActivity : ComponentActivity() {
         }.setNegativeButton("Cancel", null).show()
     }
     @Suppress("DEPRECATION")
+    @androidx.annotation.OptIn(markerClass = [androidx.camera.core.ExperimentalCameraInfo::class])
     private fun startCamera() {
         if (capture != null || cameraPending || !hasPermissions() || recording != null || busy) return
         cameraPending = true; controls(); refresh()
