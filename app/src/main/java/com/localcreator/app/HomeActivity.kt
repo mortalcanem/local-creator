@@ -22,17 +22,20 @@ class HomeActivity : ComponentActivity() {
         super.onCreate(state); storage = Storage(this)
         val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(24, 24, 24, 24); fitsSystemWindows = true }
         root.addView(TextView(this).apply { text = "Local Creator · development 0.9"; textSize = 26f })
-        root.addView(TextView(this).apply { text = "Local recording and editing. Long-session groundwork is experimental." })
+        root.addView(TextView(this).apply { text = "Local recording and editing. Background export and long-session work are experimental." })
         storageText = TextView(this).apply { text = "Checking storage…" }; root.addView(storageText)
         budgetButton = Button(this).apply { text = "Change storage budget"; setOnClickListener { if (canManageFiles()) editBudget() } }; root.addView(budgetButton)
-        root.addView(Button(this).apply { text = "Long-session recorder (experimental)"; setOnClickListener { if (!savingBudget) startActivity(Intent(this@HomeActivity, LongRecordingActivity::class.java)) } })
+        root.addView(Button(this).apply { text = "Long-session recorder (experimental)"; setOnClickListener { if (!savingBudget && !BackgroundExportService.busy) startActivity(Intent(this@HomeActivity, LongRecordingActivity::class.java)) else if (BackgroundExportService.busy) showExportGuard() } })
         root.addView(Button(this).apply { text = "Short-test recorder / import intro / originals"; setOnClickListener { if (canManageFiles()) startActivity(Intent(this@HomeActivity, MainActivity::class.java)) } })
-        root.addView(Button(this).apply { text = "Add intro and export / finished videos"; setOnClickListener { if (canManageFiles()) startActivity(Intent(this@HomeActivity, IntroExportActivity::class.java)) } })
-        root.addView(TextView(this).apply { text = "350 GB default budget is adjustable; 50 GB free-space reserve stays protected. Existing export limits remain. Do not rely on two-hour sessions until long-session testing and processing updates are complete. Uninstalling deletes private originals." })
+        root.addView(Button(this).apply { text = "Add intro and export / finished videos (tested path)"; setOnClickListener { if (canManageFiles()) startActivity(Intent(this@HomeActivity, IntroExportActivity::class.java)) } })
+        root.addView(Button(this).apply { text = "Background export / progress (experimental)"; setOnClickListener { if (!savingBudget && !LongRecordingService.state.value.active) startActivity(Intent(this@HomeActivity, BackgroundExportActivity::class.java)) } })
+        root.addView(TextView(this).apply { text = "350 GB default budget is adjustable; 50 GB free-space reserve stays protected. Background exports may be stopped by Android; retry restarts rendering. Two-hour reliability is unverified. Uninstalling deletes private originals." })
         setContentView(root)
     }
+    private fun showExportGuard() { AlertDialog.Builder(this).setMessage("Background export is active. Open Background export / progress to monitor or cancel it before recording, editing sources, deleting files or changing budget.").setPositiveButton("OK", null).show() }
     private fun canManageFiles(): Boolean {
         if (savingBudget) return false
+        if (BackgroundExportService.busy) { showExportGuard(); return false }
         if (LongRecordingService.state.value.active) { AlertDialog.Builder(this).setMessage("Stop the active long recording before editing, deleting files, changing budget, or opening another camera.").setPositiveButton("OK", null).show(); return false }
         return true
     }
@@ -46,14 +49,14 @@ class HomeActivity : ComponentActivity() {
         }
     }
     private fun editBudget() {
-        if (savingBudget) return
+        if (!canManageFiles()) return
         val input = EditText(this).apply { inputType = InputType.TYPE_CLASS_NUMBER; setSingleLine(true); setText((storage.budgetBytes / Storage.GB).toString()); setSelection(text.length) }
         val dialog = AlertDialog.Builder(this).setTitle("Managed storage budget (GB)").setMessage("Usage ceiling only, not preallocated space. The separate 50 GB free-space reserve remains.").setView(input).setNegativeButton("Cancel", null).setPositiveButton("Save", null).create()
         dialog.setOnShowListener {
             dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
                 val gb = input.text.toString().trim().toLongOrNull()
                 if (gb == null || gb <= 0 || gb > Long.MAX_VALUE / Storage.GB) { input.error = "Enter a valid positive whole number of GB"; return@setOnClickListener }
-                if (savingBudget || LongRecordingService.state.value.active) return@setOnClickListener
+                if (savingBudget || BackgroundExportService.busy || LongRecordingService.state.value.active) return@setOnClickListener
                 savingBudget = true; budgetButton.isEnabled = false
                 dialog.getButton(AlertDialog.BUTTON_POSITIVE).isEnabled = false; dialog.getButton(AlertDialog.BUTTON_NEGATIVE).isEnabled = false; dialog.setCancelable(false)
                 lifecycleScope.launch {
