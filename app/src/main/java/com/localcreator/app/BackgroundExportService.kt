@@ -52,12 +52,14 @@ class BackgroundExportService : Service() {
     private var work: kotlinx.coroutines.Job? = null
     private var engine: Transformer? = null
     private var jobId = ""
-    private var reason = "Canceled"
+    private var reason = "Service interrupted"
+    private var cancellationPhase = ExportJobs.Phase.INTERRUPTED
     override fun onBind(intent: Intent?) = null
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == CANCEL) {
-            if (jobId.isNotEmpty() && intent.getStringExtra("job") == jobId) { reason = "Canceled by user"; work?.cancel(); stopSelf() }
-            else if (work == null) stopSelf()
+            if (jobId.isNotEmpty() && intent.getStringExtra("job") == jobId) {
+                reason = "Canceled by user"; cancellationPhase = ExportJobs.Phase.CANCELED; work?.cancel(); stopSelf()
+            } else if (work == null) stopSelf()
             return START_NOT_STICKY
         }
         if (work != null) return START_NOT_STICKY
@@ -68,6 +70,7 @@ class BackgroundExportService : Service() {
             val type = if (Build.VERSION.SDK_INT >= 35) ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROCESSING else if (Build.VERSION.SDK_INT >= 29) ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC else 0
             if (Build.VERSION.SDK_INT >= 29) startForeground(NOTICE, notification("Preparing export…"), type) else startForeground(NOTICE, notification("Preparing export…"))
         } catch (e: Exception) { mutable.value = Status(jobId, false, "Service could not start: ${e.message}"); stopSelf(); return START_NOT_STICKY }
+        reason = "Service interrupted"; cancellationPhase = ExportJobs.Phase.INTERRUPTED
         work = scope.launch { process() }
         return START_NOT_STICKY
     }
@@ -88,12 +91,15 @@ class BackgroundExportService : Service() {
         var output: File? = null
         var wake: PowerManager.WakeLock? = null
         var success = false
+        var terminal = ExportJobs.Phase.FAILED
         var finalText = "Export stopped"
+        val completedText = "Export complete. Open finished videos and verify framing/audio. Sources kept."
         try {
             check(!LongRecordingService.state.value.active) { "Stop the recording first" }
             withTimeout(21_000_000L) {
                 wake = getSystemService(PowerManager::class.java).newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "$packageName:export").apply { acquire(21_600_000L) }
-                record = withContext(Dispatchers.IO) { jobs.recoverPreviousProcess(); jobs.claim(jobId) }
+                withContext(NonCancellable + Dispatchers.IO) { jobs.recoverPreviousProcess(); record = jobs.claim(jobId) }
+                currentCoroutineContext().ensureActive()
                 var job = requireNotNull(record)
                 val recording = storage.resolve(job.recording); val intro = File(storage.intros, "intro.media")
                 val exports = File(storage.root, "exports"); val finalFile = File(exports, job.outputName)
@@ -132,24 +138,31 @@ class BackgroundExportService : Service() {
                     jobs.update(job.id, job.token, ExportJobs.Phase.COMPLETED, 100)
                     success = true
                 }
-                finalText = "Export complete. Open finished videos and verify framing/audio. Sources kept."
+                finalText = completedText
             }
         } catch (e: CancellationException) {
+            terminal = if (e is TimeoutCancellationException) ExportJobs.Phase.INTERRUPTED else cancellationPhase
             finalText = if (e is TimeoutCancellationException) "Export time limit reached; retry starts rendering again" else "$reason. Sources/checkpoints kept; rendering must restart."
-        } catch (e: Exception) { finalText = "Export failed: ${e.message}. Sources kept; review any finished output before retrying." }
+        } catch (e: Exception) { terminal = ExportJobs.Phase.FAILED; finalText = "Export failed: ${e.message}. Sources kept; review any finished output before retrying." }
         finally {
+            if (success) finalText = completedText
             try { engine?.cancel() } catch (_: Exception) { }; engine = null
-            withContext(NonCancellable + Dispatchers.IO) {
-                val job = record
-                if (!success && job != null) {
-                    try { jobs.update(job.id, job.token, ExportJobs.Phase.INTERRUPTED, 0, finalText.take(512)) }
-                    catch (e: Exception) { finalText += " Could not persist job status: ${e.message}" }
+            try {
+                withContext(NonCancellable + Dispatchers.IO) {
+                    val job = record
+                    if (!success && job != null) {
+                        try { jobs.update(job.id, job.token, terminal, 0, finalText.take(512)) }
+                        catch (e: Exception) { finalText += " Could not persist job status: ${e.message}" }
+                    }
+                    try { output?.let { if (it.exists() && !it.delete()) finalText += " Temporary output cleanup incomplete." } }
+                    catch (e: Exception) { finalText += " Temporary cleanup failed: ${e.message}" }
                 }
-                output?.let { if (it.exists()) it.delete() }
+            } finally {
+                try { if (wake?.isHeld == true) wake?.release() } catch (_: Exception) { }
+                work = null
+                if (state.value.id == jobId) mutable.value = Status(jobId, false, finalText)
+                stopForeground(STOP_FOREGROUND_REMOVE); stopSelf()
             }
-            if (wake?.isHeld == true) wake?.release()
-            if (state.value.id == jobId) mutable.value = Status(jobId, false, finalText)
-            stopForeground(STOP_FOREGROUND_REMOVE); stopSelf()
         }
     }
     private suspend fun render(composition: Composition, output: File, limit: Long, storage: Storage, jobs: ExportJobs, job: ExportJobs.Job) = coroutineScope {
@@ -173,7 +186,10 @@ class BackgroundExportService : Service() {
                     }
                 }
             }
-        } finally { monitor?.cancel(); try { engine?.cancel() } finally { engine = null } }
+        } finally {
+            try { withContext(NonCancellable) { monitor?.cancelAndJoin() } }
+            finally { try { engine?.cancel() } finally { engine = null } }
+        }
     }
     private fun duration(file: File): Long {
         val reader = MediaMetadataRetriever()
@@ -186,6 +202,6 @@ class BackgroundExportService : Service() {
         effects.add(Presentation.createForWidthAndHeight(width, height, Presentation.LAYOUT_SCALE_TO_FIT))
         return EditedMediaItem.Builder(MediaItem.fromUri(Uri.fromFile(file))).setEffects(Effects(listOf(mixer, resampler), effects)).build()
     }
-    override fun onTimeout(startId: Int, fgsType: Int) { reason = "Android background-processing time allowance reached"; work?.cancel(); stopSelf() }
+    override fun onTimeout(startId: Int, fgsType: Int) { reason = "Android background-processing time allowance reached"; cancellationPhase = ExportJobs.Phase.INTERRUPTED; work?.cancel(); stopSelf() }
     override fun onDestroy() { scope.cancel(); super.onDestroy() }
 }
