@@ -2,7 +2,7 @@ plugins { id("com.android.application"); id("org.jetbrains.kotlin.android") }
 android {
     namespace = "com.localcreator.app"
     compileSdk = 35
-    defaultConfig { applicationId = "com.localcreator.app"; minSdk = 26; targetSdk = 35; versionCode = 8; versionName = "0.8.0" }
+    defaultConfig { applicationId = "com.localcreator.app"; minSdk = 27; targetSdk = 35; versionCode = 8; versionName = "0.8.0" }
     signingConfigs {
         create("persistent") {
             System.getenv("LOCAL_CREATOR_KEYSTORE")?.takeIf { it.isNotBlank() }?.let {
