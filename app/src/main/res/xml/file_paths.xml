@@ -1,1 +1,4 @@
-<paths xmlns:android="http://schemas.android.com/apk/res/android"><files-path name="recordings" path="creator/recordings/" /></paths>
+<paths xmlns:android="http://schemas.android.com/apk/res/android">
+    <files-path name="recordings" path="creator/recordings/" />
+    <files-path name="exports" path="creator/exports/" />
+</paths>

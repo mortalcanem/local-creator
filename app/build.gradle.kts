@@ -6,8 +6,8 @@ android {
         applicationId = "com.localcreator.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 6
-        versionName = "0.6.0"
+        versionCode = 7
+        versionName = "0.7.0"
     }
     signingConfigs {
         create("persistent") {
@@ -32,4 +32,6 @@ dependencies {
     implementation("androidx.camera:camera-lifecycle:1.4.1")
     implementation("androidx.camera:camera-video:1.4.1")
     implementation("androidx.camera:camera-view:1.4.1")
+    implementation("androidx.media3:media3-transformer:1.5.1")
+    implementation("androidx.media3:media3-effect:1.5.1")
 }
